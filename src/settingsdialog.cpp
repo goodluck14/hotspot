@@ -28,9 +28,17 @@
 #include "settingsdialog.h"
 #include "ui_settingsdialog.h"
 
-#include <KUrlRequester>
 #include <KComboBox>
+#include <KUrlRequester>
+#include <kconfiggroup.h>
+#include <ksharedconfig.h>
+#include <QLineEdit>
 #include <QListView>
+
+KConfigGroup config()
+{
+    return KSharedConfig::openConfig()->group("PerfPaths");
+}
 
 SettingsDialog::SettingsDialog(QWidget* parent)
     : QDialog(parent)
@@ -58,9 +66,54 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     };
     auto lastExtraLibsWidget = setupMultiPath(ui->extraLibraryPaths, ui->extraLibraryPathsLabel, ui->lineEditApplicationPath);
     setupMultiPath(ui->debugPaths, ui->debugPathsLabel, lastExtraLibsWidget);
+
+    const auto configGroups = config().groupList();
+    auto configfile = config();
+    for (const auto& configName : configGroups) {
+        if (configfile.hasGroup(configName)) {
+            // itemdata is used to save the old name so the old config can be removed
+            ui->configComboBox->addItem(configName, configName);
+        }
+    }
+
+    ui->configComboBox->setDisabled(ui->configComboBox->count() == 0);
+    ui->configComboBox->setInsertPolicy(QComboBox::InsertAtCurrent);
+
+    connect(ui->copyConfigButton, &QPushButton::pressed, this, [this] {
+        const auto name = QStringLiteral("Config %1").arg(ui->configComboBox->count() + 1);
+        ui->configComboBox->addItem(name, name);
+        ui->configComboBox->setDisabled(false);
+        ui->configComboBox->setCurrentIndex(ui->configComboBox->findText(name));
+        saveCurrentConfig();
+    });
+    connect(ui->removeConfigButton, &QPushButton::pressed, this, &SettingsDialog::removeCurrentConfig);
+    connect(ui->configComboBox->lineEdit(), &QLineEdit::editingFinished, this, &SettingsDialog::renameCurrentConfig);
+    connect(ui->configComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &SettingsDialog::applyCurrentConfig);
+    connect(ui->buttonBox, &QDialogButtonBox::accepted, this, [this] { saveCurrentConfig(); });
+
+    for (auto field : {ui->lineEditSysroot, ui->lineEditApplicationPath, ui->lineEditKallsyms, ui->lineEditObjdump}) {
+        connect(field, &KUrlRequester::textEdited, this, &SettingsDialog::saveCurrentConfig);
+        connect(field, &KUrlRequester::urlSelected, this, &SettingsDialog::saveCurrentConfig);
+    }
+
+    connect(ui->comboBoxArchitecture, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &SettingsDialog::saveCurrentConfig);
+
+    connect(ui->debugPaths, &KEditListWidget::changed, this, &SettingsDialog::saveCurrentConfig);
+    connect(ui->extraLibraryPaths, &KEditListWidget::changed, this, &SettingsDialog::saveCurrentConfig);
 }
 
 SettingsDialog::~SettingsDialog() = default;
+
+void SettingsDialog::initSettings(const QString& configName)
+{
+    const int index = ui->configComboBox->findText(configName);
+    if (index > -1) {
+        ui->configComboBox->setCurrentIndex(index);
+        applyCurrentConfig();
+    }
+}
 
 void SettingsDialog::initSettings(const QString &sysroot, const QString &appPath, const QString &extraLibPaths,
                                   const QString &debugPaths, const QString &kallsyms, const QString &arch,
@@ -123,4 +176,54 @@ QString SettingsDialog::arch() const
 QString SettingsDialog::objdump() const
 {
     return ui->lineEditObjdump->text();
+}
+
+void SettingsDialog::saveCurrentConfig()
+{
+    auto config = ::config();
+    KConfigGroup group(&config, ui->configComboBox->currentText());
+    group.writeEntry("sysroot", sysroot());
+    group.writeEntry("appPath", appPath());
+    group.writeEntry("extraLibPaths", extraLibPaths());
+    group.writeEntry("debugPaths", debugPaths());
+    group.writeEntry("kallsyms", kallsyms());
+    group.writeEntry("arch", arch());
+    group.writeEntry("objdump", objdump());
+
+    config.sync();
+}
+
+void SettingsDialog::renameCurrentConfig()
+{
+    // itemdata is used to save the old name so the old config can be removed
+    const auto oldName = ui->configComboBox->currentData().toString();
+    config().deleteGroup(oldName);
+
+    ui->configComboBox->setItemData(ui->configComboBox->currentIndex(), ui->configComboBox->currentText());
+    saveCurrentConfig();
+    config().sync();
+}
+
+void SettingsDialog::removeCurrentConfig()
+{
+    config().deleteGroup(ui->configComboBox->currentText());
+    ui->configComboBox->removeItem(ui->configComboBox->currentIndex());
+
+    if (ui->configComboBox->count() == 0) {
+        ui->configComboBox->setDisabled(true);
+    }
+}
+
+void SettingsDialog::applyCurrentConfig()
+{
+    auto config = ::config().group(ui->configComboBox->currentText());
+    const auto sysroot = config.readEntry("sysroot");
+    const auto appPath = config.readEntry("appPath");
+    const auto extraLibPaths = config.readEntry("extraLibPaths");
+    const auto debugPaths = config.readEntry("debugPaths");
+    const auto kallsyms = config.readEntry("kallsyms");
+    const auto arch = config.readEntry("arch");
+    const auto objdump = config.readEntry("objdump");
+    initSettings(sysroot, appPath, extraLibPaths, debugPaths, kallsyms, arch, objdump);
+    ::config().writeEntry("lastUsed", ui->configComboBox->currentText());
 }
