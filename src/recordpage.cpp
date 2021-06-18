@@ -54,6 +54,8 @@
 #include <Solid/Processor>
 #include <kio_version.h>
 
+#include <QRegularExpression>
+
 #include "perfrecord.h"
 
 namespace {
@@ -801,9 +803,68 @@ QStringList RecordPage::applicationConfigurations()
 
 void RecordPage::appendOutput(const QString& text)
 {
+    // this regex finds ansi escapes and extracts all the numbers in it
+    QRegularExpression regex(QLatin1String("\\x1b\\[([0-9;]+)m"));
+
     QTextCursor cursor(ui->perfResultsTextEdit->document());
     cursor.movePosition(QTextCursor::End);
-    cursor.insertText(text);
+
+    auto ansiToHtml = [](QStringList numbers) -> QString {
+        static bool openTag = false;
+        // only foregroud colors are supported currently
+        const QHash<int, QColor> colors = {
+            {30, Qt::black},       {31, Qt::darkRed},  {32, Qt::darkGreen}, {33, Qt::darkYellow}, {34, Qt::darkBlue},
+            {35, Qt::darkMagenta}, {36, Qt::darkCyan}, {37, Qt::darkGray},  {91, Qt::red},        {92, Qt::green},
+            {93, Qt::yellow},      {94, Qt::blue},     {95, Qt::magenta},   {96, Qt::cyan},       {37, Qt::white}};
+
+        for (const auto& number : numbers) {
+            bool ok;
+            int num = number.toInt(&ok);
+
+            if (ok) {
+                if (num == 0) {
+                    if (openTag) {
+                        openTag = false;
+                        return QLatin1String("</font>");
+                    } else {
+                        return QLatin1String();
+                    }
+                } else if (colors.contains(num)) {
+                    QString tag;
+
+                    if (openTag) {
+                        tag += QLatin1String("</font>");
+                    }
+
+                    tag += QStringLiteral("<font color=\"%1\">").arg(colors[num].name());
+                    openTag = true;
+                    return tag;
+                }
+            }
+        }
+        return QLatin1String();
+    };
+
+    auto matches = regex.globalMatch(text);
+    if (matches.hasNext()) {
+        QString colorText;
+        auto textList = text.split(regex);
+        while (matches.hasNext()) {
+            auto match = matches.next();
+
+            if (textList.length() > 1) {
+                // html eats up spaces, replaces them to keep the formating
+                colorText += textList.front().replace(QLatin1String(" "), QLatin1String("&nbsp;"))
+                    + ansiToHtml(match.captured(1).split(QLatin1String(";")));
+                textList.pop_front();
+            }
+        }
+        colorText += textList.front().replace(QLatin1String(" "), QLatin1String("&nbsp;"));
+        // newline don't work in html
+        cursor.insertHtml(colorText.replace(QLatin1String("\n"), QLatin1String("<br>")));
+    } else {
+        cursor.insertText(text);
+    }
 }
 
 void RecordPage::setError(const QString& message)
