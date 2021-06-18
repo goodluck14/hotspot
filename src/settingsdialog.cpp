@@ -32,6 +32,7 @@
 #include <KUrlRequester>
 #include <kconfiggroup.h>
 #include <ksharedconfig.h>
+#include <QKeyEvent>
 #include <QLineEdit>
 #include <QListView>
 
@@ -176,6 +177,22 @@ QString SettingsDialog::arch() const
 QString SettingsDialog::objdump() const
 {
     return ui->lineEditObjdump->text();
+}
+
+void SettingsDialog::keyPressEvent(QKeyEvent* event)
+{
+    // disable the return -> accept policy since it prevents the user from confirming name changes in the combobox
+    // you can still press CTRL + Enter to close the dialog
+    switch (event->key()) {
+    case Qt::Key_Enter:
+    case Qt::Key_Return:
+        if (event->modifiers() == Qt::Key_Control) {
+            QDialog::keyPressEvent(event);
+        }
+        break;
+    default:
+        QDialog::keyPressEvent(event);
+    }
 }
 
 void SettingsDialog::saveCurrentConfig()
