@@ -44,10 +44,11 @@
 
 #include <hotspot-config.h>
 
+#include <KAuth>
+
 PerfRecord::PerfRecord(QObject* parent)
     : QObject(parent)
     , m_perfRecordProcess(nullptr)
-    , m_elevatePrivilegesProcess(nullptr)
     , m_outputPath()
     , m_userTerminated(false)
 {
@@ -62,35 +63,15 @@ PerfRecord::~PerfRecord()
     }
 }
 
-static QStringList sudoOptions(const QString& sudoBinary)
-{
-    QStringList options;
-    if (sudoBinary.endsWith(QLatin1String("/kdesudo")) || sudoBinary.endsWith(QLatin1String("/kdesu"))) {
-        // make the dialog transient for the current window
-        options.append(QStringLiteral("--attach"));
-        options.append(QString::number(KWindowSystem::activeWindow()));
-    }
-    if (sudoBinary.endsWith(QLatin1String("/kdesu"))) {
-        // show text output
-        options.append(QStringLiteral("-t"));
-    }
-    return options;
-}
-
 void PerfRecord::startRecording(bool elevatePrivileges, const QStringList& perfOptions, const QString& outputPath,
                                 const QStringList& recordOptions, const QString& workingDirectory)
 {
     if (elevatePrivileges) {
         // elevate privileges temporarily as root
-        // use kdesudo/kdesu to start the elevate_perf_privileges.sh script
+        // use kauth to start the elevate_perf_privileges.sh script
         // then parse its output and once we get the "waiting..." line the privileges got elevated
         // in that case, we can continue to start perf and quit the elevate_perf_privileges.sh script
         // once perf has started
-        const auto sudoBinary = sudoUtil();
-        if (sudoBinary.isEmpty()) {
-            emit recordingFailed(tr("No sudo utility found. Please install pkexec, kdesudo or kdesu."));
-            return;
-        }
 
         const auto elevateScript = Util::findLibexecBinary(QStringLiteral("elevate_perf_privileges.sh"));
         if (elevateScript.isEmpty()) {
@@ -98,36 +79,11 @@ void PerfRecord::startRecording(bool elevatePrivileges, const QStringList& perfO
             return;
         }
 
-        auto options = sudoOptions(sudoBinary);
-        options.append(elevateScript);
-
-        if (m_elevatePrivilegesProcess) {
-            m_elevatePrivilegesProcess->kill();
-            m_elevatePrivilegesProcess->deleteLater();
-        }
-        m_elevatePrivilegesProcess = new QProcess(this);
-        m_elevatePrivilegesProcess->setProcessChannelMode(QProcess::ForwardedChannels);
-
         // I/O redirection of client scripts launched by kdesu & friends doesn't work, i.e. no data can be read...
         // so instead we use a temporary file and parse its contents via a polling timer :-/
-        auto* outputFile = new QTemporaryFile(m_elevatePrivilegesProcess);
+        auto* outputFile = new QTemporaryFile();
         outputFile->open();
-        options.append(outputFile->fileName());
 
-        connect(this, &PerfRecord::recordingStarted, m_elevatePrivilegesProcess.data(), [this] {
-            QTimer::singleShot(1000, m_elevatePrivilegesProcess, [this]() {
-                emit recordingOutput(QStringLiteral("\nrestoring privileges...\n"));
-                m_elevatePrivilegesProcess->terminate();
-            });
-        });
-        connect(m_elevatePrivilegesProcess.data(), &QProcess::errorOccurred, m_elevatePrivilegesProcess.data(),
-                [this](QProcess::ProcessError /*error*/) {
-                    if (!m_perfRecordProcess) {
-                        emit recordingFailed(
-                            tr("Failed to elevate privileges: %1").arg(m_elevatePrivilegesProcess->errorString()));
-                        m_elevatePrivilegesProcess->deleteLater();
-                    }
-                });
         // poll the file for new input, readyRead isn't being emitted by QFile (cf. docs)
         auto* readTimer = new QTimer(outputFile);
         auto readSlot = [this, outputFile, perfOptions, outputPath, recordOptions, workingDirectory]() {
@@ -147,22 +103,27 @@ void PerfRecord::startRecording(bool elevatePrivileges, const QStringList& perfO
             }
         };
         connect(readTimer, &QTimer::timeout, this, readSlot);
-        connect(m_elevatePrivilegesProcess.data(), &QProcess::started, readTimer,
-                [readTimer] { readTimer->start(250); });
-        connect(m_elevatePrivilegesProcess.data(),
-                static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished),
-                m_elevatePrivilegesProcess.data(), [this, readSlot] {
-                    // read remaining data
-                    readSlot();
-                    // then delete the process
-                    m_elevatePrivilegesProcess->deleteLater();
 
-                    if (!m_perfRecordProcess) {
-                        emit recordingFailed(tr("Failed to elevate privileges."));
-                    }
-                });
+        KAuth::Action action(QLatin1String("com.kdab.hotspot.elevate"));
+        action.setHelperId(QLatin1String("com.kdab.hotspot"));
+        QVariantMap args;
+        args[QLatin1String("script")] = elevateScript;
+        args[QLatin1String("output")] = outputFile->fileName();
+        action.setArguments(args);
 
-        m_elevatePrivilegesProcess->start(sudoBinary, options);
+        KAuth::ExecuteJob* job = action.execute();
+
+        connect(job, &KAuth::ExecuteJob::percentChanged, this, [this, readTimer](KJob* job, unsigned long step) {
+            Q_UNUSED(job);
+            qDebug() << step;
+            if (step == 1) {
+                emit recordingFailed(tr("Failed to elevate privileges."));
+            } else if (step == 2) {
+                readTimer->start(250);
+            }
+        });
+
+        job->start();
     } else {
         startRecording(perfOptions, outputPath, recordOptions, workingDirectory);
     }
@@ -297,9 +258,6 @@ const QString PerfRecord::perfCommand()
 void PerfRecord::stopRecording()
 {
     m_userTerminated = true;
-    if (m_elevatePrivilegesProcess) {
-        m_elevatePrivilegesProcess->terminate();
-    }
     if (m_perfRecordProcess) {
         m_perfRecordProcess->terminate();
     }
@@ -309,21 +267,6 @@ void PerfRecord::sendInput(const QByteArray& input)
 {
     Q_ASSERT(m_perfRecordProcess);
     m_perfRecordProcess->write(input);
-}
-
-QString PerfRecord::sudoUtil()
-{
-    const auto commands = {
-        QStringLiteral("pkexec"), QStringLiteral("kdesudo"), QStringLiteral("kdesu"),
-        // gksudo / gksu seem to close stdin and thus the elevate script doesn't wait on read
-    };
-    for (const auto& cmd : commands) {
-        QString util = QStandardPaths::findExecutable(cmd);
-        if (!util.isEmpty()) {
-            return util;
-        }
-    }
-    return {};
 }
 
 QString PerfRecord::currentUsername()

@@ -16,6 +16,7 @@ ecm_add_test(
         KF5::CoreAddons
         KF5::WindowSystem
         KF5::KIOCore
+        KF5::AuthCore
     TEST_NAME
         tst_perfparser
 )

@@ -356,12 +356,12 @@ RecordPage::RecordPage(QWidget* parent)
     if (m_perfRecord->currentUsername() == QLatin1String("root")) {
         ui->elevatePrivilegesCheckBox->setChecked(true);
         ui->elevatePrivilegesCheckBox->setEnabled(false);
-    } else if (m_perfRecord->sudoUtil().isEmpty()) {
-        ui->elevatePrivilegesCheckBox->setChecked(false);
-        ui->elevatePrivilegesCheckBox->setEnabled(false);
-        ui->elevatePrivilegesCheckBox->setText(
-            tr("(Note: Install pkexec, kdesudo or kdesu to temporarily elevate perf privileges.)"));
-    }
+    } /* else if (m_perfRecord->sudoUtil().isEmpty()) {
+         ui->elevatePrivilegesCheckBox->setChecked(false);
+         ui->elevatePrivilegesCheckBox->setEnabled(false);
+         ui->elevatePrivilegesCheckBox->setText(
+             tr("(Note: Install pkexec, kdesudo or kdesu to temporarily elevate perf privileges.)"));
+     }*/
 
     connect(ui->elevatePrivilegesCheckBox, &QCheckBox::toggled, this, &RecordPage::updateOffCpuCheckboxState);
 

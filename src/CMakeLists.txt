@@ -90,6 +90,7 @@ target_link_libraries(hotspot
     KF5::WindowSystem
     KF5::Notifications
     KF5::IconThemes
+    KF5::AuthCore
     models
     PrefixTickLabels
     KDAB::kddockwidgets
@@ -102,3 +103,11 @@ set_target_properties(hotspot
 
 install(TARGETS hotspot RUNTIME DESTINATION ${KDE_INSTALL_BINDIR})
 install(FILES hotspot.notifyrc DESTINATION ${KDE_INSTALL_KNOTIFY5RCDIR})
+
+add_executable(authhelper authhelper.cpp)
+target_link_libraries(authhelper KF5::AuthCore)
+
+install(TARGETS authhelper DESTINATION ${KAUTH_HELPER_INSTALL_DIR})
+
+kauth_install_actions(com.kdab.hotspot authhelper.actions)
+kauth_install_helper_files(authhelper com.kdab.hotspot root)
