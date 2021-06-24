@@ -52,6 +52,14 @@ public:
     explicit FlameGraph(QWidget* parent = nullptr, Qt::WindowFlags flags = {});
     ~FlameGraph();
 
+    enum class ColorScheme : int
+    {
+        Default,
+        Binary,
+        Kernel,
+        System
+    };
+
     void setFilterStack(FilterAndZoomStack* filterStack);
     void setTopDownData(const Data::TopDownResults& topDownData);
     void setBottomUpData(const Data::BottomUpResults& bottomUpData);
@@ -59,6 +67,8 @@ public:
 
     QImage toImage() const;
     void saveSvg(const QString& fileName) const;
+
+    void setColorScheme(ColorScheme scheme);
 
 protected:
     bool eventFilter(QObject* object, QEvent* event) override;
@@ -99,6 +109,8 @@ private:
     QAction* m_resetAction = nullptr;
     QPushButton* m_backButton = nullptr;
     QPushButton* m_forwardButton = nullptr;
+    QLabel* m_colorSchemeLabel = nullptr;
+    QComboBox* m_colorSchemeSelector = nullptr;
     const FrameGraphicsItem* m_tooltipItem = nullptr;
     FrameGraphicsItem* m_rootItem = nullptr;
     QVector<FrameGraphicsItem*> m_selectionHistory;

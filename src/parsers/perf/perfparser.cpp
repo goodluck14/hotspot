@@ -958,7 +958,9 @@ public:
         const auto binaryString = strings.value(symbol.symbol.binary.id);
         const auto pathString = strings.value(symbol.symbol.path.id);
         const auto actualPathString = strings.value(symbol.symbol.actualPath.id);
-        bottomUpResult.symbols[symbol.id] = {symbolString, relAddr, size, binaryString, pathString, actualPathString};
+        const auto isKernel = symbol.symbol.isKernel;
+        bottomUpResult.symbols[symbol.id] = {symbolString, relAddr,          size,    binaryString,
+                                             pathString,   actualPathString, isKernel};
 
         // Count total and missing symbols per module for error report
         auto& numSymbols = numSymbolsByModule[symbol.symbol.binary.id];

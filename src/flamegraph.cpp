@@ -262,6 +262,8 @@ enum class BrushType
     Memory
 };
 
+static FlameGraph::ColorScheme scheme = FlameGraph::ColorScheme::Default;
+
 /**
  * Generate a brush from the "hot" color space used in upstream flamegraph.pl
  */
@@ -274,10 +276,60 @@ QBrush brushImpl(uint hash, BrushType type)
     return brushes.at(hash % brushes.size());
 }
 
+QBrush brushBinary(const Data::Symbol& symbol)
+{
+    static QHash<QString, QBrush> brushes;
+
+    if (brushes.contains(symbol.binary)) {
+        return brushes[symbol.binary];
+    }
+
+    // make gaps between colors since a human cant see a difference between #aabbff and #aabbfe
+    QBrush _brush(QColor((2 + rand(16)) * 8, (15 + rand(16)) * 8, (15 + rand(16)) * 8, 125));
+    brushes[symbol.binary] = _brush;
+    return _brush;
+}
+
+QBrush brushKernel(const Data::Symbol& symbol)
+{
+    static QBrush kernel(QColor(255, 0, 0, 125));
+    static QBrush user(QColor(0, 0, 255, 125));
+
+    if (symbol.isKernel) {
+        return kernel;
+    }
+    return user;
+}
+
+QBrush brushSystem(const Data::Symbol& symbol)
+{
+    static QBrush system(QColor(0, 125, 0, 125));
+    static QBrush user(QColor(200, 200, 0, 125));
+    static QBrush unkown(QColor(50, 50, 50, 125));
+
+    // I have seen [ only on kernel calls, but am not sure if this is correct
+    if (symbol.path.isEmpty() || symbol.path.startsWith(QLatin1String("["))) {
+        return unkown;
+    } else if (symbol.path.startsWith(QLatin1String("/usr")) || symbol.path.startsWith(QLatin1String("/lib"))) {
+        // assume files in /usr and /lib are not from the user
+        return system;
+    }
+    return user;
+}
+
 template<typename T>
 QBrush brush(const T& entry, BrushType type)
 {
-    return brushImpl(qHash(entry), type);
+    switch (scheme) {
+    case FlameGraph::ColorScheme::Binary:
+        return brushBinary(entry);
+    case FlameGraph::ColorScheme::Kernel:
+        return brushKernel(entry);
+    case FlameGraph::ColorScheme::System:
+        return brushSystem(entry);
+    default:
+        return brushImpl(qHash(entry), type);
+    }
 }
 
 /**
@@ -410,6 +462,8 @@ FlameGraph::FlameGraph(QWidget* parent, Qt::WindowFlags flags)
     , m_view(new QGraphicsView(this))
     , m_displayLabel(new KSqueezedTextLabel(this))
     , m_searchResultsLabel(new QLabel(this))
+    , m_colorSchemeLabel(new QLabel(this))
+    , m_colorSchemeSelector(new QComboBox(this))
 {
     m_displayLabel->setTextElideMode(Qt::ElideRight);
     qRegisterMetaType<FrameGraphicsItem*>();
@@ -494,6 +548,8 @@ FlameGraph::FlameGraph(QWidget* parent, Qt::WindowFlags flags)
     controls->layout()->addWidget(collapseRecursionCheckbox);
     controls->layout()->addWidget(costThreshold);
     controls->layout()->addWidget(m_searchInput);
+    controls->layout()->addWidget(m_colorSchemeLabel);
+    controls->layout()->addWidget(m_colorSchemeSelector);
 
     m_displayLabel->setWordWrap(true);
     m_displayLabel->setTextInteractionFlags(m_displayLabel->textInteractionFlags() | Qt::TextSelectableByMouse);
@@ -523,6 +579,18 @@ FlameGraph::FlameGraph(QWidget* parent, Qt::WindowFlags flags)
     connect(m_resetAction, &QAction::triggered, this, [this]() { selectItem(0); });
     addAction(m_resetAction);
     updateNavigationActions();
+
+    m_colorSchemeLabel->setText(tr("Color Scheme:"));
+
+    m_colorSchemeSelector->addItem(QLatin1String("Default"), static_cast<int>(FlameGraph::ColorScheme::Default));
+    m_colorSchemeSelector->addItem(QLatin1String("Binary"), static_cast<int>(FlameGraph::ColorScheme::Binary));
+    m_colorSchemeSelector->addItem(QLatin1String("Kernel"), static_cast<int>(FlameGraph::ColorScheme::Kernel));
+    m_colorSchemeSelector->addItem(QLatin1String("System"), static_cast<int>(FlameGraph::ColorScheme::System));
+
+    connect(m_colorSchemeSelector, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this] {
+        setColorScheme(static_cast<FlameGraph::ColorScheme>(
+            m_colorSchemeSelector->itemData(m_colorSchemeSelector->currentIndex()).toInt()));
+    });
 }
 
 FlameGraph::~FlameGraph() = default;
@@ -630,6 +698,10 @@ void FlameGraph::setBottomUpData(const Data::BottomUpResults& bottomUpData)
                                          ki18n("Show a flame graph over the aggregated %1 sample costs."));
     connect(m_costSource, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), this,
             &FlameGraph::showData);
+
+    // reset color scheme to prevent hotspot from trying to show off cpu time if none is available
+    scheme = FlameGraph::ColorScheme::Default;
+    m_colorSchemeSelector->setCurrentIndex(0);
 }
 
 void FlameGraph::clear()
@@ -678,6 +750,23 @@ void FlameGraph::saveSvg(const QString& fileName) const
 
     m_rootItem->setPen(oldPen);
     m_rootItem->setBrush(oldBrush);
+}
+
+void FlameGraph::setColorScheme(ColorScheme _scheme)
+{
+    scheme = _scheme;
+
+    std::function<void(FrameGraphicsItem*)> traverseFunction = [&traverseFunction](FrameGraphicsItem* item) {
+        item->setBrush(brush(item->symbol(), BrushType::Hot));
+        for (const auto& child : item->childItems()) {
+            traverseFunction(reinterpret_cast<FrameGraphicsItem*>(child));
+        }
+    };
+
+    // don't recolor the root item
+    for (const auto& child : m_rootItem->childItems()) {
+        traverseFunction(reinterpret_cast<FrameGraphicsItem*>(child));
+    }
 }
 
 void FlameGraph::showData()
