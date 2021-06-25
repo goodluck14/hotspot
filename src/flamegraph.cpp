@@ -63,6 +63,8 @@
 #include "resultsutil.h"
 #include "settings.h"
 
+static FlameGraph::ColorScheme scheme = FlameGraph::ColorScheme::Default;
+
 namespace {
 enum SearchMatchType
 {
@@ -75,7 +77,7 @@ enum SearchMatchType
 class FrameGraphicsItem : public QGraphicsRectItem
 {
 public:
-    FrameGraphicsItem(const qint64 cost, Data::Costs::Unit unit, const Data::Symbol& symbol,
+    FrameGraphicsItem(const qint64 cost, Data::Costs::Unit unit, const Data::Symbol& symbol, const float offPercent,
                       FrameGraphicsItem* parent = nullptr);
 
     qint64 cost() const;
@@ -86,6 +88,7 @@ public:
 
     QString description() const;
     void setSearchMatchType(SearchMatchType matchType);
+    float offPercent() const;
 
 protected:
     void hoverEnterEvent(QGraphicsSceneHoverEvent* event) override;
@@ -97,17 +100,19 @@ private:
     bool m_isHovered;
     SearchMatchType m_searchMatch = NoSearch;
     Data::Costs::Unit m_unit;
+    float m_offPercent;
 };
 
 Q_DECLARE_METATYPE(FrameGraphicsItem*)
 
 FrameGraphicsItem::FrameGraphicsItem(const qint64 cost, Data::Costs::Unit unit, const Data::Symbol& symbol,
-                                     FrameGraphicsItem* parent)
+                                     const float offPercent, FrameGraphicsItem* parent)
     : QGraphicsRectItem(parent)
     , m_cost(cost)
     , m_symbol(symbol)
     , m_isHovered(false)
     , m_unit(unit)
+    , m_offPercent(offPercent)
 {
     setFlag(QGraphicsItem::ItemIsSelectable);
     setAcceptHoverEvents(true);
@@ -130,16 +135,32 @@ Data::Symbol FrameGraphicsItem::symbol() const
 
 void FrameGraphicsItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* /*widget*/)
 {
+    auto drawRect = [this, painter](const QColor& color) {
+        if (scheme == FlameGraph::ColorScheme::OnOff && m_offPercent >= 0) {
+            const QBrush green(QColor(0, 255, 0, color.alpha()));
+            const QBrush red(QColor(255, 0, 0, color.alpha()));
+
+            auto leftRect = rect();
+            leftRect.setRight(leftRect.x() + leftRect.width() * m_offPercent / 100.);
+            painter->fillRect(leftRect, red);
+            auto rightRect = rect();
+            rightRect.setLeft(leftRect.right());
+            painter->fillRect(rightRect, green);
+        } else {
+            painter->fillRect(rect(), color);
+        }
+    };
+
     if (isSelected() || m_isHovered || m_searchMatch == DirectMatch) {
         auto selectedColor = brush().color();
         selectedColor.setAlpha(255);
-        painter->fillRect(rect(), selectedColor);
+        drawRect(selectedColor);
     } else if (m_searchMatch == NoMatch) {
         auto noMatchColor = brush().color();
         noMatchColor.setAlpha(50);
-        painter->fillRect(rect(), noMatchColor);
+        drawRect(noMatchColor);
     } else { // default, when no search is running, or a sub-item is matched
-        painter->fillRect(rect(), brush());
+        drawRect(brush().color());
     }
 
     const QPen oldPen = painter->pen();
@@ -225,6 +246,11 @@ void FrameGraphicsItem::setSearchMatchType(SearchMatchType matchType)
     }
 }
 
+float FrameGraphicsItem::offPercent() const
+{
+    return m_offPercent;
+}
+
 namespace {
 
 int rand(int max)
@@ -261,8 +287,6 @@ enum class BrushType
     Hot,
     Memory
 };
-
-static FlameGraph::ColorScheme scheme = FlameGraph::ColorScheme::Default;
 
 /**
  * Generate a brush from the "hot" color space used in upstream flamegraph.pl
@@ -375,6 +399,15 @@ FrameGraphicsItem* findItemBySymbol(const QList<QGraphicsItem*>& items, const Da
     return nullptr;
 }
 
+int hasOffPercent(const Data::Costs& costs)
+{
+    for (int i = 0, c = costs.numTypes(); i < c; i++) {
+        if (costs.typeName(i) == QLatin1String("off-CPU Time"))
+            return i;
+    }
+    return -1;
+}
+
 /**
  * Convert the top-down graph into a tree of FrameGraphicsItem.
  */
@@ -391,7 +424,12 @@ void toGraphicsItems(const Data::Costs& costs, int type, const QVector<Tree>& da
         }
         auto item = findItemBySymbol(parent->childItems(), row.symbol);
         if (!item) {
-            item = new FrameGraphicsItem(costs.cost(type, row.id), costs.unit(type), row.symbol, parent);
+            float offPercent = 0;
+            int offPercentType = hasOffPercent(costs);
+            if (offPercentType != -1) {
+                offPercent = costs.cost(offPercentType, row.id) * 100. / costs.totalCost(offPercentType);
+            }
+            item = new FrameGraphicsItem(costs.cost(type, row.id), costs.unit(type), row.symbol, offPercent, parent);
             item->setPen(parent->pen());
             item->setBrush(brush(row.symbol, BrushType::Hot));
         } else {
@@ -413,7 +451,7 @@ FrameGraphicsItem* parseData(const Data::Costs& costs, int type, const QVector<T
     const QPen pen(scheme.foreground().color());
 
     QString label = i18n("%1 aggregated %2 cost in total", costs.formatCost(type, totalCost), costs.typeName(type));
-    auto rootItem = new FrameGraphicsItem(totalCost, costs.unit(type), {label, {}});
+    auto rootItem = new FrameGraphicsItem(totalCost, costs.unit(type), {label, {}}, -1);
     rootItem->setBrush(scheme.background());
     rootItem->setPen(pen);
     toGraphicsItems(costs, type, topDownData, rootItem, static_cast<double>(totalCost) * costThreshold / 100.,
@@ -702,6 +740,15 @@ void FlameGraph::setBottomUpData(const Data::BottomUpResults& bottomUpData)
     // reset color scheme to prevent hotspot from trying to show off cpu time if none is available
     scheme = FlameGraph::ColorScheme::Default;
     m_colorSchemeSelector->setCurrentIndex(0);
+
+    if (hasOffPercent(bottomUpData.costs) != -1) {
+        m_colorSchemeSelector->addItem(QLatin1String("Off CPU"), static_cast<int>(FlameGraph::ColorScheme::OnOff));
+    } else {
+        int index = m_colorSchemeSelector->findText(QLatin1String("Off CPU"));
+        if (index != -1) {
+            m_colorSchemeSelector->removeItem(index);
+        }
+    }
 }
 
 void FlameGraph::clear()

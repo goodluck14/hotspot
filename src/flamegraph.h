@@ -57,7 +57,8 @@ public:
         Default,
         Binary,
         Kernel,
-        System
+        System,
+        OnOff
     };
 
     void setFilterStack(FilterAndZoomStack* filterStack);
